@@ -21,7 +21,13 @@ app.get('/health', (req, res) => {
 app.post('/classify', async (req, res) => {
   try {
     const { procedureData } = req.body;
-    const classification = await classifyAgent.classify(JSON.parse(procedureData));
+    let parsedData;
+    try {
+      parsedData = typeof procedureData === 'string' ? JSON.parse(procedureData) : procedureData;
+    } catch (parseError) {
+      return res.status(400).json({ error: 'Invalid JSON', message: 'procedureData must be valid JSON' });
+    }
+    const classification = await classifyAgent.classify(parsedData);
     res.json(classification);
   } catch (error) {
     logger.error('Classification error:', error);
@@ -45,7 +51,13 @@ app.post('/prioritize', async (req, res) => {
 app.post('/analyze-kpis', async (req, res) => {
   try {
     const { kpiData } = req.body;
-    const analysis = await kpiAnalysisAgent.analyze(JSON.parse(kpiData));
+    let parsedData;
+    try {
+      parsedData = typeof kpiData === 'string' ? JSON.parse(kpiData) : kpiData;
+    } catch (parseError) {
+      return res.status(400).json({ error: 'Invalid JSON', message: 'kpiData must be valid JSON' });
+    }
+    const analysis = await kpiAnalysisAgent.analyze(parsedData);
     res.json(analysis);
   } catch (error) {
     logger.error('KPI Analysis error:', error);

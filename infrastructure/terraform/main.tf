@@ -119,6 +119,10 @@ resource "google_sql_user" "crm" {
 resource "random_password" "db_password" {
   length  = 32
   special = true
+  
+  lifecycle {
+    ignore_changes = [result]
+  }
 }
 
 # Secret Manager for DB password
@@ -336,8 +340,10 @@ resource "google_cloud_run_service" "frontend" {
   depends_on = [google_project_service.apis]
 }
 
-# IAM - Allow unauthenticated access to frontend
+# IAM - Allow unauthenticated access to frontend (only in non-prod environments)
+# For production, consider implementing Cloud IAP or other authentication mechanisms
 resource "google_cloud_run_service_iam_member" "frontend_public" {
+  count    = var.environment != "prod" ? 1 : 0
   service  = google_cloud_run_service.frontend.name
   location = var.region
   role     = "roles/run.invoker"
