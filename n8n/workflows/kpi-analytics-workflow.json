@@ -1,0 +1,241 @@
+{
+  "name": "CRM Insurance Agency - KPI Analytics",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Hourly KPI Update",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  COUNT(*) as total_procedures,\n  COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END) as completed,\n  COUNT(CASE WHEN status = 'IN_PROGRESS' THEN 1 END) as in_progress,\n  COUNT(CASE WHEN status = 'NEW' THEN 1 END) as pending,\n  AVG(EXTRACT(EPOCH FROM (completed_at - created_at))/3600) as avg_completion_hours,\n  COUNT(CASE WHEN sla_met = true THEN 1 END)::float / NULLIF(COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END), 0) * 100 as sla_compliance_rate\nFROM procedures\nWHERE created_at >= NOW() - INTERVAL '24 hours';"
+      },
+      "id": "postgres-operational-kpis",
+      "name": "Fetch Operational KPIs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [450, 200],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "CRM PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  assigned_analyst,\n  COUNT(*) as procedures_handled,\n  AVG(EXTRACT(EPOCH FROM (completed_at - first_contact_at))/3600) as avg_handling_hours,\n  AVG(customer_satisfaction_score) as avg_satisfaction,\n  COUNT(CASE WHEN has_errors = true THEN 1 END)::float / COUNT(*) * 100 as error_rate\nFROM procedures\nWHERE completed_at >= NOW() - INTERVAL '24 hours'\nGROUP BY assigned_analyst\nORDER BY procedures_handled DESC;"
+      },
+      "id": "postgres-analyst-kpis",
+      "name": "Fetch Analyst KPIs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [450, 400],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "CRM PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Merge operational and analyst KPIs\nconst operationalKpis = $items('Fetch Operational KPIs')[0].json;\nconst analystKpis = $items('Fetch Analyst KPIs').map(item => item.json);\n\nconst kpiReport = {\n  timestamp: new Date().toISOString(),\n  period: '24h',\n  operational: {\n    totalProcedures: operationalKpis.total_procedures || 0,\n    completed: operationalKpis.completed || 0,\n    inProgress: operationalKpis.in_progress || 0,\n    pending: operationalKpis.pending || 0,\n    avgCompletionHours: parseFloat(operationalKpis.avg_completion_hours) || 0,\n    slaComplianceRate: parseFloat(operationalKpis.sla_compliance_rate) || 0,\n    completionRate: operationalKpis.total_procedures > 0 \n      ? (operationalKpis.completed / operationalKpis.total_procedures * 100).toFixed(2)\n      : 0\n  },\n  analysts: analystKpis.map(analyst => ({\n    name: analyst.assigned_analyst,\n    proceduresHandled: analyst.procedures_handled || 0,\n    avgHandlingHours: parseFloat(analyst.avg_handling_hours) || 0,\n    avgSatisfaction: parseFloat(analyst.avg_satisfaction) || 0,\n    errorRate: parseFloat(analyst.error_rate) || 0\n  }))\n};\n\nreturn [{ json: kpiReport }];"
+      },
+      "id": "function-merge-kpis",
+      "name": "Merge KPIs",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.AI_AGENT_URL}}/analyze-kpis",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "kpiData",
+              "value": "={{JSON.stringify($json)}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-ai-analyze",
+      "name": "AI KPI Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "kpi_snapshots",
+        "columns": "timestamp, period, operational_kpis, analyst_kpis, ai_insights",
+        "additionalFields": {}
+      },
+      "id": "postgres-save-kpis",
+      "name": "Save KPI Snapshot",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1050, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "CRM PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.alerts && $json.alerts.length > 0}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-has-alerts",
+      "name": "Has Alerts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "channel": "#crm-alerts",
+        "text": "⚠️ KPI Alert\n\n{{$json.alerts.join('\\n')}}\n\nTimestamp: {{$json.timestamp}}",
+        "otherOptions": {}
+      },
+      "id": "slack-alert",
+      "name": "Send Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1450, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "2",
+          "name": "Slack API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Hourly KPI Update": {
+      "main": [
+        [
+          {
+            "node": "Fetch Operational KPIs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Analyst KPIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Operational KPIs": {
+      "main": [
+        [
+          {
+            "node": "Merge KPIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Analyst KPIs": {
+      "main": [
+        [
+          {
+            "node": "Merge KPIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge KPIs": {
+      "main": [
+        [
+          {
+            "node": "AI KPI Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI KPI Analysis": {
+      "main": [
+        [
+          {
+            "node": "Save KPI Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save KPI Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Has Alerts?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Alerts?": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "id": "1",
+      "name": "CRM"
+    },
+    {
+      "id": "3",
+      "name": "KPI"
+    }
+  ],
+  "triggerCount": 1
+}

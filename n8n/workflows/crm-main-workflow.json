@@ -1,0 +1,185 @@
+{
+  "name": "CRM Insurance Agency - Main Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-capture",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-lead-capture",
+      "name": "Lead Capture Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Validate and transform incoming lead data\nconst leadData = items[0].json;\n\nconst transformedLead = {\n  id: `LEAD-${Date.now()}`,\n  createdAt: new Date().toISOString(),\n  status: 'NEW',\n  source: leadData.source || 'WEBSITE',\n  customer: {\n    name: leadData.customerName,\n    email: leadData.email,\n    phone: leadData.phone,\n    documentId: leadData.documentId\n  },\n  procedure: {\n    type: leadData.procedureType,\n    priority: leadData.priority || 'NORMAL',\n    description: leadData.description\n  },\n  assignedAnalyst: null,\n  kpi: {\n    receivedAt: new Date().toISOString(),\n    firstContactAt: null,\n    completedAt: null\n  }\n};\n\nreturn [{ json: transformedLead }];"
+      },
+      "id": "function-transform-lead",
+      "name": "Transform Lead Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.AI_AGENT_URL}}/classify",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "procedureData",
+              "value": "={{JSON.stringify($json)}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-ai-classify",
+      "name": "AI Classification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Assign analyst based on AI classification and workload\nconst procedureData = items[0].json;\nconst classification = procedureData.aiClassification || {};\n\n// Logic for analyst assignment\nconst analystAssignment = {\n  ...procedureData,\n  assignedAnalyst: classification.recommendedAnalyst || 'QUEUE',\n  procedure: {\n    ...procedureData.procedure,\n    category: classification.category,\n    estimatedTime: classification.estimatedTime,\n    complexity: classification.complexity\n  }\n};\n\nreturn [{ json: analystAssignment }];"
+      },
+      "id": "function-assign-analyst",
+      "name": "Assign Analyst",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "procedures",
+        "columns": "id, created_at, status, source, customer_name, customer_email, customer_phone, procedure_type, priority, assigned_analyst, category, complexity",
+        "additionalFields": {}
+      },
+      "id": "postgres-insert",
+      "name": "Save to Database",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1050, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "CRM PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.NOTIFICATION_EMAIL}}",
+        "toEmail": "={{$json.assignedAnalyst}}@company.com",
+        "subject": "New Procedure Assigned: {{$json.id}}",
+        "text": "You have been assigned a new procedure.\n\nProcedure ID: {{$json.id}}\nCustomer: {{$json.customer.name}}\nType: {{$json.procedure.type}}\nPriority: {{$json.procedure.priority}}\nComplexity: {{$json.procedure.complexity}}\n\nPlease review and process accordingly."
+      },
+      "id": "email-notification",
+      "name": "Notify Analyst",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{JSON.stringify({ success: true, procedureId: $json.id, status: 'CREATED' })}}"
+      },
+      "id": "webhook-response",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    }
+  ],
+  "connections": {
+    "Lead Capture Webhook": {
+      "main": [
+        [
+          {
+            "node": "Transform Lead Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Lead Data": {
+      "main": [
+        [
+          {
+            "node": "AI Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Classification": {
+      "main": [
+        [
+          {
+            "node": "Assign Analyst",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assign Analyst": {
+      "main": [
+        [
+          {
+            "node": "Save to Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Database": {
+      "main": [
+        [
+          {
+            "node": "Notify Analyst",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Analyst": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "id": "1",
+      "name": "CRM"
+    },
+    {
+      "id": "2",
+      "name": "Insurance"
+    }
+  ],
+  "triggerCount": 1
+}

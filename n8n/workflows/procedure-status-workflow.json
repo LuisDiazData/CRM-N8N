@@ -1,0 +1,195 @@
+{
+  "name": "CRM Insurance Agency - Procedure Status Update",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "PUT",
+        "path": "procedure-status",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-status-update",
+      "name": "Status Update Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Validate status update request\nconst updateData = items[0].json;\nconst validStatuses = ['NEW', 'IN_PROGRESS', 'PENDING_DOCUMENTS', 'UNDER_REVIEW', 'COMPLETED', 'CANCELLED'];\n\nif (!updateData.procedureId) {\n  throw new Error('Procedure ID is required');\n}\n\nif (!validStatuses.includes(updateData.newStatus)) {\n  throw new Error(`Invalid status. Valid statuses: ${validStatuses.join(', ')}`);\n}\n\nconst statusUpdate = {\n  procedureId: updateData.procedureId,\n  previousStatus: updateData.previousStatus,\n  newStatus: updateData.newStatus,\n  updatedBy: updateData.analystId,\n  updatedAt: new Date().toISOString(),\n  notes: updateData.notes || '',\n  isFirstContact: updateData.previousStatus === 'NEW' && updateData.newStatus === 'IN_PROGRESS',\n  isCompletion: updateData.newStatus === 'COMPLETED'\n};\n\nreturn [{ json: statusUpdate }];"
+      },
+      "id": "function-validate-update",
+      "name": "Validate Update",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE procedures SET \n  status = '{{$json.newStatus}}',\n  updated_at = '{{$json.updatedAt}}',\n  updated_by = '{{$json.updatedBy}}',\n  first_contact_at = CASE WHEN '{{$json.isFirstContact}}' = 'true' THEN '{{$json.updatedAt}}' ELSE first_contact_at END,\n  completed_at = CASE WHEN '{{$json.isCompletion}}' = 'true' THEN '{{$json.updatedAt}}' ELSE completed_at END\nWHERE id = '{{$json.procedureId}}'\nRETURNING *;"
+      },
+      "id": "postgres-update-status",
+      "name": "Update Database",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "CRM PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "procedure_history",
+        "columns": "procedure_id, previous_status, new_status, updated_by, updated_at, notes",
+        "additionalFields": {}
+      },
+      "id": "postgres-insert-history",
+      "name": "Log Status Change",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "credentials": {
+        "postgres": {
+          "id": "1",
+          "name": "CRM PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.newStatus}}",
+              "value2": "COMPLETED"
+            }
+          ]
+        }
+      },
+      "id": "if-completed",
+      "name": "Is Completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.NOTIFICATION_EMAIL}}",
+        "toEmail": "={{$json.customer_email}}",
+        "subject": "Your procedure {{$json.procedureId}} has been completed",
+        "text": "Dear {{$json.customer_name}},\n\nWe are pleased to inform you that your procedure (ID: {{$json.procedureId}}) has been successfully completed.\n\nIf you have any questions, please don't hesitate to contact us.\n\nBest regards,\nInsurance Agency Team"
+      },
+      "id": "email-customer-notification",
+      "name": "Notify Customer",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{JSON.stringify({ success: true, procedureId: $json.procedureId, newStatus: $json.newStatus })}}"
+      },
+      "id": "webhook-response",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1450, 300]
+    }
+  ],
+  "connections": {
+    "Status Update Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Update": {
+      "main": [
+        [
+          {
+            "node": "Update Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Database": {
+      "main": [
+        [
+          {
+            "node": "Log Status Change",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Status Change": {
+      "main": [
+        [
+          {
+            "node": "Is Completed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Completed?": {
+      "main": [
+        [
+          {
+            "node": "Notify Customer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Customer": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "id": "1",
+      "name": "CRM"
+    },
+    {
+      "id": "2",
+      "name": "Insurance"
+    }
+  ],
+  "triggerCount": 1
+}
